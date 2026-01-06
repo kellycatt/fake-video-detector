@@ -1,78 +1,102 @@
 import streamlit as st
-import time
-import random
+import cv2  # OpenCV for video processing
+from PIL import Image
+from transformers import pipeline
 
-# --- PART 1: THE "MOCK" AI BRAIN ---
-# In a real app, this is where you would load your TensorFlow or PyTorch model.
-# For now, we simulate the analysis.
-def mock_analyze_video(video_file):
+# --- PART 1: THE REAL AI BRAIN ---
+# We use a cache so we don't reload the heavy AI model every time you click a button
+@st.cache_resource
+def load_model():
+    # This downloads a model specifically trained to spot AI-generated images
+    # Model: "umm-maybe/AI-image-detector" (Good for general AI art/video frames)
+    pipe = pipeline("image-classification", model="umm-maybe/AI-image-detector")
+    return pipe
+
+def analyze_video(video_path):
     """
-    Simulates analyzing a video frame-by-frame.
-    Returns a score between 0.0 (Real) and 1.0 (Fake).
+    1. Breaks video into frames.
+    2. Scans 1 frame every second.
+    3. Averages the 'Artificial' score.
     """
+    pipe = load_model()
+    vidcap = cv2.VideoCapture(video_path)
     
-    # Simulate the computer "thinking" (processing frames)
-    # We create a progress bar to show the user something is happening
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    fps = vidcap.get(cv2.CAP_PROP_FPS) # Frames per second
+    total_frames = int(vidcap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps
     
-    for percent_complete in range(100):
-        time.sleep(0.03) # Simulates time taken to check a frame
-        status_text.text(f"Scanning frame {percent_complete * 15}...")
-        progress_bar.progress(percent_complete + 1)
+    frame_scores = []
     
-    status_text.text("Analysis Complete.")
+    # We will scan 1 frame every second to save time
+    for i in range(0, int(duration)):
+        # Jump to the specific second
+        vidcap.set(cv2.CAP_PROP_POS_MSEC, i * 1000) 
+        success, image = vidcap.read()
+        
+        if success:
+            # Convert OpenCV Image (BGR) to PIL Image (RGB) for the AI
+            img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(img_rgb)
+            
+            # ASK THE AI
+            result = pipe(pil_image)
+            
+            # The result looks like: [{'label': 'artificial', 'score': 0.99}, ...]
+            # We find the score for 'artificial'
+            ai_score = next((item['score'] for item in result if item['label'] == 'artificial'), 0)
+            frame_scores.append(ai_score)
+
+    vidcap.release()
     
-    # SIMULATED RESULT:
-    # Randomly decides if it's fake or real for this demo
-    # In the real version, this variable comes from your AI model
-    fake_probability = random.uniform(0, 1) 
+    # Calculate average score across all frames
+    if not frame_scores:
+        return 0.0
     
-    return fake_probability
+    final_score = sum(frame_scores) / len(frame_scores)
+    return final_score
 
-# --- PART 2: THE WEBSITE FRONTEND ---
+# --- PART 2: THE WEBSITE INTERFACE ---
 
-# 1. Page Config
-st.set_page_config(page_title="DeepFake Detector", page_icon="🕵️")
+st.set_page_config(page_title="Real AI Video Detector", page_icon="🤖")
 
-# 2. Title and Description
-st.title("🕵️ AI Video Authenticator")
-st.markdown("""
-This tool analyzes video artifacts to determine if a video is **Real** or **AI-Generated**.
-Upload a video below to begin the scan.
-""")
+st.title("🤖 Real AI Video Detector")
+st.write("This tool breaks video into frames and scans them for AI generation artifacts.")
 
-st.divider() # A visual line separator
+uploaded_file = st.file_uploader("Upload a video", type=["mp4", "mov"])
 
-# 3. File Uploader
-uploaded_file = st.file_uploader("Upload an MP4 or MOV file", type=["mp4", "mov"])
-
-# 4. The Logic
 if uploaded_file is not None:
-    # Display the video player so the user can watch what they uploaded
     st.video(uploaded_file)
     
-    # The "Analyze" Button
-    if st.button("Analyze Video", type="primary"):
+    if st.button("Analyze Video (Real Scan)"):
+        # Save the uploaded file temporarily so OpenCV can read it
+        with open("temp_video.mp4", "wb") as f:
+            f.write(uploaded_file.getbuffer())
         
-        with st.spinner("Initializing AI Models..."):
-            # Call the mock brain function
-            score = mock_analyze_video(uploaded_file)
+        status_bar = st.progress(0)
+        status_text = st.empty()
+        status_text.write("📱 Loading AI Model... (This takes a moment)")
         
-        # 5. Displaying Results
-        st.divider()
-        st.subheader("Analysis Results")
-        
-        # Logic to display Red (Fake) or Green (Real) based on score
-        if score > 0.6:
-            st.error(f"🚨 **HIGH LIKELIHOOD OF AI**")
-            st.metric(label="Fake Probability", value=f"{score:.1%}")
-            st.write("Flags detected: Unnatural blinking, irregular lip-sync.")
-        elif score < 0.4:
-            st.success(f"✅ **LIKELY REAL VIDEO**")
-            st.metric(label="Real Probability", value=f"{(1-score):.1%}")
-            st.write("No significant AI artifacts detected.")
-        else:
-            st.warning(f"⚠️ **INCONCLUSIVE / SUSPICIOUS**")
-            st.metric(label="Uncertainty Score", value=f"{score:.1%}")
-            st.write("Some artifacts detected, but not enough to confirm.")
+        # RUN THE SCAN
+        try:
+            score = analyze_video("temp_video.mp4")
+            status_bar.progress(100)
+            
+            # DISPLAY RESULTS
+            st.divider()
+            percentage = score * 100
+            
+            if score > 0.60:
+                st.error(f"🚨 **AI DETECTED**")
+                st.metric("AI Confidence Score", f"{percentage:.1f}%")
+                st.write("The visual textures in this video strongly match AI generation patterns.")
+            elif score < 0.40:
+                st.success(f"✅ **LIKELY REAL**")
+                st.metric("AI Confidence Score", f"{percentage:.1f}%")
+                st.write("The video contains natural noise and patterns typical of real cameras.")
+            else:
+                st.warning(f"⚠️ **UNCERTAIN**")
+                st.metric("AI Confidence Score", f"{percentage:.1f}%")
+                st.write("The video has mixed signals. It might be heavily edited or a high-quality deepfake.")
+                
+        except Exception as e:
+            st.error(f"Error analyzing video: {e}")
